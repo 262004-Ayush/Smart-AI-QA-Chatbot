@@ -3,6 +3,7 @@ import requests
 from bs4 import BeautifulSoup
 import os
 import re
+import json
 
 # -----------------------------
 # NVIDIA API CONFIG
@@ -60,19 +61,29 @@ background-color:#007bff !important;
 color:white !important;
 }
 
-/* Open website button */
-a.stLinkButton button {
-background-color:#28a745;
-color:white;
-border:none;
-padding:10px 16px;
-border-radius:6px;
-font-weight:600;
-}
-
 .white-text{
 color:white;
 font-weight:bold;
+}
+
+/* Orange open link button */
+.orange-link-btn {
+display: inline-block;
+background-color: #fd7c2a;
+color: white !important;
+padding: 8px 16px;
+border-radius: 6px;
+font-size: 14px;
+font-weight: normal;
+text-decoration: none !important;
+margin: 4px 0;
+transition: background-color 0.2s ease;
+}
+
+.orange-link-btn:hover {
+background-color: #e06010 !important;
+color: white !important;
+text-decoration: none !important;
 }
 
 </style>
@@ -110,6 +121,16 @@ if st.sidebar.button("Clear Chat"):
     st.rerun()
 
 # -----------------------------
+# ORANGE LINK BUTTON HELPER
+# -----------------------------
+
+def open_link_button(url):
+    st.markdown(
+        f'<a href="{url}" target="_blank" class="orange-link-btn">🔗 Open Link</a>',
+        unsafe_allow_html=True
+    )
+
+# -----------------------------
 # AI MODEL FUNCTIONS
 # -----------------------------
 
@@ -127,13 +148,43 @@ def ask_qa_model(prompt):
     return r.json()["choices"][0]["message"]["content"]
 
 
-def ask_code_model(prompt):
+def stream_code_model(prompt):
+    """Streaming response - word by word"""
 
     payload = {
         "model": "meta/llama-3.1-70b-instruct",
         "messages": [{"role": "user", "content": prompt}],
         "temperature": 0.1,
-        "max_tokens": 1200
+        "max_tokens": 4000,
+        "stream": True
+    }
+
+    r = requests.post(API_URL, headers=headers, json=payload, stream=True)
+
+    for line in r.iter_lines():
+        if line:
+            line = line.decode("utf-8")
+            if line.startswith("data: "):
+                line = line[6:]
+                if line.strip() == "[DONE]":
+                    break
+                try:
+                    chunk = json.loads(line)
+                    delta = chunk["choices"][0]["delta"].get("content", "")
+                    if delta:
+                        yield delta
+                except:
+                    continue
+
+
+def ask_code_model(prompt):
+    """Non-streaming - full response"""
+
+    payload = {
+        "model": "meta/llama-3.1-70b-instruct",
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0.1,
+        "max_tokens": 4000
     }
 
     r = requests.post(API_URL, headers=headers, json=payload)
@@ -154,46 +205,85 @@ def get_html(url):
         return None
 
 
-def extract_inputs(html):
+def extract_page_info(html):
 
     soup = BeautifulSoup(html, "html.parser")
 
     inputs = []
-
     for tag in soup.find_all(["input", "textarea", "select"]):
-
         name = tag.get("name") or tag.get("id") or "N/A"
         typ = tag.get("type") or tag.name
-
         inputs.append({
             "Field": name,
             "Type": typ
         })
 
-    return inputs
+    buttons = []
+    for tag in soup.find_all(["button", "input"]):
+        if tag.get("type") in ["submit", "button", "reset"]:
+            label = tag.get_text(strip=True) or tag.get("value") or tag.get("name") or "N/A"
+            buttons.append({
+                "Button": label,
+                "Type": tag.get("type") or "button"
+            })
+
+    title = soup.title.string if soup.title else "N/A"
+
+    headings = []
+    for tag in soup.find_all(["h1", "h2", "h3"]):
+        text = tag.get_text(strip=True)
+        if text:
+            headings.append(text)
+
+    links_count = len(soup.find_all("a", href=True))
+    forms_count = len(soup.find_all("form"))
+
+    page_summary = {
+        "title": title,
+        "headings": headings[:10],
+        "forms_count": forms_count,
+        "links_count": links_count
+    }
+
+    return inputs, buttons, page_summary
 
 # -----------------------------
-# TEST CASE GENERATOR
+# TEST CASE GENERATOR - STREAMING
 # -----------------------------
 
-def generate_test_cases(inputs):
+def generate_test_cases_stream(inputs, buttons, page_summary):
 
     prompt = f"""
-You are a senior QA engineer.
+You are a senior QA engineer with 10+ years of experience.
 
-Website form fields:
+Website Page Analysis:
+- Page Title: {page_summary['title']}
+- Page Headings: {page_summary['headings']}
+- Total Forms: {page_summary['forms_count']}
+- Total Links: {page_summary['links_count']}
 
+Input Fields Detected:
 {inputs}
 
-Generate:
-Positive test cases
-Negative test cases
-Edge cases
-Boundary value analysis
-Equivalence partitioning
+Buttons Detected:
+{buttons}
+
+Generate comprehensive manual test cases covering ALL sections below.
+For EVERY test case provide Test Case ID, Title, Steps, Example Input Data, Expected Result.
+Minimum 3 test cases per section. Complete all 7 sections fully without stopping.
+
+## Positive Test Cases
+## Negative Test Cases
+## Edge Cases
+## Boundary Value Analysis
+## Equivalence Partitioning
+## UI & Functional Test Cases
+## Security Test Cases
+
+Include exact example input values for every test case.
 """
 
-    return ask_qa_model(prompt)
+    return stream_code_model(prompt)
 
 # -----------------------------
 # SELENIUM SCRIPT GENERATOR
@@ -242,14 +332,28 @@ for msg in st.session_state.messages:
         st.markdown(msg["content"])
 
         if msg.get("url"):
-            st.link_button("Open Website", msg["url"])
+            open_link_button(msg["url"])
+
+        if msg.get("page_summary"):
+            ps = msg["page_summary"]
+            st.markdown(f"""
+**🌐 Page Title:** {ps['title']}
+**📋 Forms Found:** {ps['forms_count']}
+**🔗 Links Found:** {ps['links_count']}
+**📌 Headings:** {', '.join(ps['headings'][:5]) if ps['headings'] else 'N/A'}
+""")
 
         if msg.get("table"):
+            st.markdown("#### 📥 Detected Input Fields")
             st.table(msg["table"])
+
+        if msg.get("buttons"):
+            st.markdown("#### 🔘 Detected Buttons")
+            st.table(msg["buttons"])
 
         if msg.get("test_cases"):
 
-            st.markdown("### AI Generated Test Cases")
+            st.markdown("### 🧪 AI Generated Test Cases")
             st.markdown(msg["test_cases"])
 
             if st.button("Generate JAVA Selenium Automation Script", key=msg["url"], type="secondary"):
@@ -287,22 +391,38 @@ if user_input := st.chat_input("Ask testing question or paste website URL"):
 
             if html:
 
-                inputs = extract_inputs(html)
+                inputs, buttons, page_summary = extract_page_info(html)
 
-                st.link_button("Open Website", user_input)
+                open_link_button(user_input)
 
+                st.markdown(f"""
+**🌐 Page Title:** {page_summary['title']}
+**📋 Forms Found:** {page_summary['forms_count']}
+**🔗 Links Found:** {page_summary['links_count']}
+**📌 Headings:** {', '.join(page_summary['headings'][:5]) if page_summary['headings'] else 'N/A'}
+""")
+
+                st.markdown("#### 📥 Detected Input Fields")
                 st.table(inputs)
 
-                test_cases = generate_test_cases(inputs)
+                if buttons:
+                    st.markdown("#### 🔘 Detected Buttons")
+                    st.table(buttons)
 
-                st.markdown("### Generated Test Cases")
-                st.markdown(test_cases)
+                st.markdown("### 🧪 Generated Test Cases")
+
+                # Streaming output - word by word
+                test_cases = st.write_stream(
+                    generate_test_cases_stream(inputs, buttons, page_summary)
+                )
 
                 st.session_state.messages.append({
                     "role": "assistant",
-                    "content": "Detected Input Fields",
+                    "content": "✅ Page Analysis Complete",
                     "table": inputs,
+                    "buttons": buttons,
                     "test_cases": test_cases,
+                    "page_summary": page_summary,
                     "url": user_input
                 })
 
