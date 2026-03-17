@@ -3,6 +3,7 @@ import requests
 from bs4 import BeautifulSoup
 import os
 import re
+import json
 
 # -----------------------------
 # NVIDIA API CONFIG
@@ -20,11 +21,7 @@ headers = {
 # PAGE CONFIG
 # -----------------------------
 
-st.set_page_config(
-    page_title="AI Smart QA Chatbot",
-    layout="wide",
-    initial_sidebar_state="collapsed"
-)
+st.set_page_config(page_title="AI Smart QA Chatbot", layout="wide")
 
 # -----------------------------
 # CUSTOM CSS
@@ -32,17 +29,6 @@ st.set_page_config(
 
 st.markdown("""
 <style>
-
-[data-testid="stAppViewContainer"] > section.main {
-    padding-left: 1rem !important;
-    padding-right: 1rem !important;
-}
-
-.main .block-container {
-    max-width: 100% !important;
-    padding-left: 1rem !important;
-    padding-right: 1rem !important;
-}
 
 /* Default buttons green */
 div.stButton > button {
@@ -80,20 +66,22 @@ color:white;
 font-weight:bold;
 }
 
-/* Orange link button - CHOTA */
-.orange-btn {
+/* Orange open link button */
+.orange-link-btn {
 display: inline-block;
-background-color: #e85d00 !important;
+background-color: #fd7c2a;
 color: white !important;
-padding: 5px 12px;
+padding: 8px 16px;
 border-radius: 6px;
-font-size: 13px;
+font-size: 14px;
+font-weight: normal;
 text-decoration: none !important;
 margin: 4px 0;
+transition: background-color 0.2s ease;
 }
 
-.orange-btn:hover {
-background-color: #c44e00 !important;
+.orange-link-btn:hover {
+background-color: #e06010 !important;
 color: white !important;
 text-decoration: none !important;
 }
@@ -131,6 +119,16 @@ for msg in st.session_state.messages:
 if st.sidebar.button("Clear Chat"):
     st.session_state.messages = []
     st.rerun()
+
+# -----------------------------
+# ORANGE LINK BUTTON HELPER
+# -----------------------------
+
+def open_link_button(url):
+    st.markdown(
+        f'<a href="{url}" target="_blank" class="orange-link-btn">🔗 Open Link</a>',
+        unsafe_allow_html=True
+    )
 
 # -----------------------------
 # AI MODEL FUNCTIONS
@@ -171,7 +169,6 @@ def stream_code_model(prompt):
                 if line.strip() == "[DONE]":
                     break
                 try:
-                    import json
                     chunk = json.loads(line)
                     delta = chunk["choices"][0]["delta"].get("content", "")
                     if delta:
@@ -250,7 +247,6 @@ def extract_page_info(html):
 
     return inputs, buttons, page_summary
 
-
 # -----------------------------
 # TEST CASE GENERATOR - STREAMING
 # -----------------------------
@@ -289,7 +285,6 @@ Include exact example input values for every test case.
 
     return stream_code_model(prompt)
 
-
 # -----------------------------
 # SELENIUM SCRIPT GENERATOR
 # -----------------------------
@@ -306,31 +301,25 @@ Input fields:
 {inputs}
 
 Rules:
+
 Return only Java code.
 Do not include comments.
 Do not include prerequisites.
 
 Structure:
+
 public class AutomationTest
+
 public static void main(String[] args)
 
 Inside main method first line must be:
+
 WebDriver driver = new ChromeDriver();
 
 Then open website, fill fields and submit form.
 """
 
     return ask_code_model(prompt)
-
-# -----------------------------
-# ORANGE LINK BUTTON HELPER
-# -----------------------------
-
-def open_link_button(url):
-    st.markdown(
-        f'<a href="{url}" target="_blank" class="orange-btn">🔗 Open Link</a>',
-        unsafe_allow_html=True
-    )
 
 # -----------------------------
 # DISPLAY CHAT
@@ -371,7 +360,7 @@ for msg in st.session_state.messages:
 
                 code = generate_selenium_script(msg["url"], msg["table"])
 
-                st.markdown("### ⚙️ This Automation Script Performs End-to-End Testing")
+                st.markdown("### This Automation Script Performs End-to-End Testing")
 
                 st.code(code, language="java")
 
@@ -404,14 +393,14 @@ if user_input := st.chat_input("Ask testing question or paste website URL"):
 
                 inputs, buttons, page_summary = extract_page_info(html)
 
+                open_link_button(user_input)
+
                 st.markdown(f"""
 **🌐 Page Title:** {page_summary['title']}
 **📋 Forms Found:** {page_summary['forms_count']}
 **🔗 Links Found:** {page_summary['links_count']}
 **📌 Headings:** {', '.join(page_summary['headings'][:5]) if page_summary['headings'] else 'N/A'}
 """)
-
-                open_link_button(user_input)
 
                 st.markdown("#### 📥 Detected Input Fields")
                 st.table(inputs)
@@ -420,11 +409,12 @@ if user_input := st.chat_input("Ask testing question or paste website URL"):
                     st.markdown("#### 🔘 Detected Buttons")
                     st.table(buttons)
 
-                st.markdown("### 🧪 AI Generated Test Cases")
+                st.markdown("### 🧪 Generated Test Cases")
 
                 # Streaming output - word by word
-                stream = generate_test_cases_stream(inputs, buttons, page_summary)
-                test_cases = st.write_stream(stream)
+                test_cases = st.write_stream(
+                    generate_test_cases_stream(inputs, buttons, page_summary)
+                )
 
                 st.session_state.messages.append({
                     "role": "assistant",
@@ -437,43 +427,21 @@ if user_input := st.chat_input("Ask testing question or paste website URL"):
                 })
 
             else:
-                st.error("❌ Unable to fetch website. Please check the URL.")
+                st.error("Unable to fetch website")
 
         else:
 
             prompt = f"""
 You are a software testing expert.
+
 Answer clearly:
+
 {user_input}
 """
 
-            # QA answer bhi stream karo
-            def stream_qa(p):
-                payload = {
-                    "model": "meta/llama-3.1-8b-instruct",
-                    "messages": [{"role": "user", "content": p}],
-                    "temperature": 0.3,
-                    "max_tokens": 800,
-                    "stream": True
-                }
-                r = requests.post(API_URL, headers=headers, json=payload, stream=True)
-                import json
-                for line in r.iter_lines():
-                    if line:
-                        line = line.decode("utf-8")
-                        if line.startswith("data: "):
-                            line = line[6:]
-                            if line.strip() == "[DONE]":
-                                break
-                            try:
-                                chunk = json.loads(line)
-                                delta = chunk["choices"][0]["delta"].get("content", "")
-                                if delta:
-                                    yield delta
-                            except:
-                                continue
+            answer = ask_qa_model(prompt)
 
-            answer = st.write_stream(stream_qa(prompt))
+            st.markdown(answer)
 
             st.session_state.messages.append({
                 "role": "assistant",
